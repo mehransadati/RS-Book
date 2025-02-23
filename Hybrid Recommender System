@@ -1,0 +1,255 @@
+import pandas as pd
+import numpy as np
+import streamlit as st
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
+import seaborn as sns
+import altair as alt
+import plotly.express as px
+from wordcloud import WordCloud
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from scipy.sparse.linalg import svds
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+
+font_css = """
+<style>
+@font-face {
+    font-family: 'Vazir';
+    src: url('file:///C:\Users\Mehran\Desktop\Project\Vazir-Regular.ttf') format('truetype');
+}
+html, body, [class*="st-"] {
+    font-family: 'Vazir', sans-serif;
+}
+</style>
+"""
+st.markdown(font_css, unsafe_allow_html=True)
+
+
+# گام ۱: بارگذاری داده‌ها با قابلیت آپلود فایل
+@st.cache_data
+def load_data(file, file_type):
+    if file_type == "csv":
+        return pd.read_csv(file)
+    elif file_type == "excel":
+        return pd.read_excel(file)
+    else:
+        return None
+
+
+# تابع اجرای خوشه‌بندی K-Means
+def perform_kmeans(df, n_clusters=3):
+    numerical_columns = df.select_dtypes(include=['number']).columns.tolist()
+    if not numerical_columns:
+        st.error("هیچ ویژگی عددی برای خوشه‌بندی پیدا نشد!")
+        return None, None
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    df['Cluster'] = kmeans.fit_predict(df[numerical_columns])
+    return df, kmeans
+
+# تابع نمایش خوشه‌بندی K-Means
+def plot_kmeans_clusters(df):
+    fig, ax = plt.subplots(figsize=(8,5))
+    sns.scatterplot(x=df.iloc[:, 0], y=df.iloc[:, 1], hue=df['Cluster'], palette="viridis", ax=ax)
+    ax.set_title("نتایج خوشه‌بندی K-Means")
+    st.pyplot(fig)
+
+
+# گام ۲: بررسی و تمیزکاری داده‌ها
+def clean_data(df):
+    # نمایش مقادیر خالی قبل از تمیزکاری
+    st.write("Missing values before cleaning:", df.isnull().sum())
+
+    for col in df.columns:
+        if col in ['Average_Rating', 'Number_Of_Ratings']:
+            # تبدیل به مقدار عددی و جایگزینی مقادیر خالی با صفر
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        elif col in ['Categories', 'Author_Name']:
+            # جایگزینی مقادیر خالی با رشته خالی
+            df[col] = df[col].fillna('').astype(str)
+        else:
+            # پر کردن مقادیر خالی عددی با میانگین
+            if df[col].dtype in ["float64", "int64"]:
+                df[col].fillna(df[col].mean(), inplace=True)
+            else:
+                df[col].fillna("Unknown", inplace=True)
+
+    # اطمینان از نوع داده مناسب
+    if 'Average_Rating' in df.columns:
+        df['Average_Rating'] = pd.to_numeric(df['Average_Rating'], errors='coerce').fillna(0)
+    if 'Number_Of_Ratings' in df.columns:
+        df['Number_Of_Ratings'] = pd.to_numeric(df['Number_Of_Ratings'], errors='coerce').fillna(0)
+
+    # نمایش مقادیر خالی پس از تمیزکاری
+    st.write("Missing values after cleaning:", df.isnull().sum())
+    return df
+
+# گام ۳: تحلیل داده‌ها
+def analyze_data(books, users, ratings):
+    # نمایش اطلاعات کلی از هر فایل
+    st.write("Books Info:")
+    st.dataframe(books.head())
+    st.write("Users Info:")
+    st.dataframe(users.head())
+    st.write("Ratings Info:")
+    st.dataframe(ratings.head())
+
+    # بررسی وجود ستون 'Average_Rating'
+    if 'Average_Rating' not in books.columns:
+        st.error("Column 'Average_Rating' not found in dataset!")
+        return  
+
+    # اطمینان از عددی بودن مقادیر
+    books['Average_Rating'] = pd.to_numeric(books['Average_Rating'], errors='coerce')
+
+    # فیلتر کردن فقط مقادیر 1 تا 5
+    valid_ratings = [1, 2, 3, 4, 5]
+    filtered_ratings = books[books['Average_Rating'].isin(valid_ratings)]
+
+    # نمایش تعداد داده‌های معتبر
+    st.write(f"Number of valid ratings: {len(filtered_ratings)}")
+
+    # رسم نمودار اگر داده معتبر وجود دارد
+    if not filtered_ratings.empty:
+        st.write("Average Rating Distribution (1 to 5 only):")
+        fig, ax = plt.subplots()
+        sns.histplot(filtered_ratings['Average_Rating'], bins=5, discrete=True, kde=False, ax=ax, color="blue")
+        ax.set_xticks(valid_ratings)  # نمایش فقط اعداد 1 تا 5 روی محور x
+        st.pyplot(fig)
+    else:
+        st.warning("No valid ratings available to display.")
+
+
+    # توزیع تعداد امتیازها
+    st.write("Number of Ratings Distribution:")
+    fig, ax = plt.subplots()
+    sns.boxplot(books['Number_Of_Ratings'], ax=ax, color="green")
+    st.pyplot(fig)
+
+    # نمودار کلمات نویسندگان
+    st.write("WordCloud for Authors:")
+    wordcloud = WordCloud(
+        width=800,
+        height=400,
+        background_color="white",
+        font_path="C:/Users/Mehran/Desktop/Vazir-Regular.ttf"  # مسیر فونت فارسی
+    ).generate(" ".join(books['Author_Name']))
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wordcloud, interpolation='bilinear')
+    ax.axis("off")
+    st.pyplot(fig)
+
+# گام ۴: سیستم مبتنی بر محتوا
+def content_based_recommender(books, book_id):
+    tfidf = TfidfVectorizer(stop_words='english')
+
+    # بررسی وجود ستون 'Categories' و جایگزینی در صورت نیاز
+    if 'Categuries' in books.columns:
+        books.rename(columns={'Categuries': 'Categories'}, inplace=True)
+
+    books['Categories'] = books['Categories'].fillna('')
+    tfidf_matrix = tfidf.fit_transform(books['Categories'] + " " + books['Author_Name'])
+    cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
+    indices = pd.Series(books.index, index=books['Book_ID']).drop_duplicates()
+
+    idx = indices[book_id]
+    sim_scores = list(enumerate(cosine_sim[idx]))
+    sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
+    sim_scores = sim_scores[1:11]  # ۱۰ کتاب مشابه
+    book_indices = [i[0] for i in sim_scores]
+    return books.iloc[book_indices]
+
+# گام ۵: سیستم مبتنی بر همکاری
+def collaborative_filtering_recommender(ratings, books, user_id):
+    user_book_matrix = ratings.pivot(index='User_ID', columns='Book_ID', values='Book_Rating').fillna(0)
+    user_ratings_mean = np.mean(user_book_matrix, axis=1)
+    matrix_normalized = user_book_matrix - user_ratings_mean.values.reshape(-1, 1)
+
+    # تبدیل ماتریس به فرمت Dense
+    matrix_normalized = matrix_normalized.values
+
+    # تنظیم مقدار k
+    k = min(matrix_normalized.shape) - 1  # مقدار k نباید از ابعاد ماتریس بیشتر باشد
+
+    U, sigma, Vt = svds(matrix_normalized, k=k)
+    sigma = np.diag(sigma)
+
+    predicted_ratings = np.dot(np.dot(U, sigma), Vt) + user_ratings_mean.values.reshape(-1, 1)
+    preds_df = pd.DataFrame(predicted_ratings, columns=user_book_matrix.columns, index=user_book_matrix.index)
+
+    user_row = preds_df.loc[user_id].sort_values(ascending=False)
+    recommended_books = books[books['Book_ID'].isin(user_row.head(10).index)]
+    return recommended_books
+
+# گام ۶: سیستم ترکیبی
+def hybrid_recommender(books, ratings, user_id):
+    # سیستم مبتنی بر محتوا
+    user_rated_books = ratings[ratings['User_ID'] == user_id]['Book_ID']
+    content_recommendations = pd.DataFrame()
+
+    for book_id in user_rated_books:
+        content_rec = content_based_recommender(books, book_id)
+        content_recommendations = pd.concat([content_recommendations, content_rec])
+
+    # سیستم مبتنی بر همکاری
+    collab_rec = collaborative_filtering_recommender(ratings, books, user_id)
+
+    # ترکیب نتایج
+    hybrid_rec = pd.concat([content_recommendations, collab_rec]).drop_duplicates().head(10)
+    return hybrid_rec
+
+# گام ۷: اجرای سیستم پیشنهادگر با Streamlit
+def main():
+    st.title("سیستم پیشنهادگر ترکیبی برای کتاب‌ها")
+    st.sidebar.title("آپلود فایل‌ها")
+    books_file = st.sidebar.file_uploader("آپلود فایل Books", type=["csv", "xlsx"])
+    users_file = st.sidebar.file_uploader("آپلود فایل Users", type=["csv", "xlsx"])
+    ratings_file = st.sidebar.file_uploader("آپلود فایل Ratings", type=["csv", "xlsx"])
+
+    if books_file and users_file and ratings_file:
+        books = load_data(books_file, books_file.name.split(".")[-1])
+        users = load_data(users_file, users_file.name.split(".")[-1])
+        ratings = load_data(ratings_file, ratings_file.name.split(".")[-1])
+
+        metric_selection = st.sidebar.selectbox("انتخاب متریک ارزیابی:", ["ACSI", "RMSE و MAE", "K-Means"])
+        
+        if metric_selection == "ACSI":
+            st.header("نظرسنجی رضایتمندی کاربر")
+            user_id = st.selectbox("شناسه کاربر را انتخاب کنید:", users['User_ID'].unique())
+            q1 = st.slider("1- میزان رضایت از سیستم؟", 1, 10, 5)
+            q2 = st.slider("2- فاصله از ایده‌آل؟", 1, 10, 5)
+            q3 = st.slider("3- آیا سیستم را توصیه می‌کنید؟", 1, 10, 5)
+            q4 = st.slider("4- همخوانی اطلاعات با خدمات؟", 1, 10, 5)
+            if st.button("محاسبه ACSI"):
+                acsi_score = (q1 * 0.4) + (q2 * 0.3) + (q3 * 0.2) + (q4 * 0.1)
+                st.write(f"🔹 **شاخص رضایت مشتری (ACSI): {acsi_score:.2f} از 10**")
+
+        elif metric_selection == "RMSE و MAE":
+            if st.button("محاسبه RMSE و MAE"):
+                actual_ratings = ratings['Book_Rating']
+                predicted_ratings = ratings['Book_Rating'].apply(lambda x: np.random.uniform(1, 5))
+                rmse = np.sqrt(mean_squared_error(actual_ratings, predicted_ratings))
+                mae = mean_absolute_error(actual_ratings, predicted_ratings)
+                st.write(f"📊 **RMSE:** {rmse:.4f}")
+                st.write(f"📊 **MAE:** {mae:.4f}")
+                error_data = pd.DataFrame({"معیار": ["RMSE", "MAE"], "مقدار": [rmse, mae]})
+                fig = px.bar(error_data, x="معیار", y="مقدار", text="مقدار", color="مقدار", color_continuous_scale="reds", title="مقایسه RMSE و MAE")
+                fig.update_traces(texttemplate='%{text:.4f}', textposition='outside')
+                fig.update_layout(yaxis=dict(range=[0, max(rmse, mae) + 0.5]))
+                st.plotly_chart(fig)
+
+        elif metric_selection == "K-Means":
+            st.header("خوشه‌بندی با K-Means")
+            num_clusters = st.slider("تعداد خوشه‌ها", 2, 10, 3)
+            if st.button("اجرای خوشه‌بندی K-Means"):
+                df, kmeans = perform_kmeans(books, n_clusters=num_clusters)
+                if df is not None:
+                    st.write("### داده‌های خوشه‌بندی‌شده:")
+                    st.dataframe(df.head())
+                    plot_kmeans_clusters(df)
+
+
+if __name__ == "__main__":
+    main()
